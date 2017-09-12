@@ -17,42 +17,42 @@ import (
 	"fmt"
 
 	"github.com/juju/errors"
+	"golang.org/x/net/context"
 	"k8s.io/client-go/pkg/api/v1"
 )
 
 // Case
 type Case struct {
-	// Name
+	// Name is the name of the test case.
 	Name string `yaml:"name", json:"name"`
 
-	// URL is the url for agent to down binary
+	// URL is the url for agent to down binary.
 	URL string `yaml:"url" json:"url"`
 
-	// Image
+	// Image is the docker image for running container.
 	Image string `yaml:"image" json:"image"`
 
-	// Port
+	// Port is export for container.
 	Port int `yaml:"port" json:"port"`
 
-	// Label
+	// Labels is for k8s to schedule.
 	Labels map[string]string `yaml:"labels" json:"lables"`
 
-	pod *v1.Pod
-
+	pod    *v1.Pod
 	status Status
+	ctx    *context.Context
 }
 
 func (c *Case) start() error {
-	_, err := xpost(fmt.Sprintf("%s/%d/process/%s/start", c.pod.Status.PodIP, c.Port, c.Name), []byte())
+	_, err := xpost(fmt.Sprintf("%s/%d/process/%s/start", c.pod.Status.PodIP, c.Port, c.Name), []byte(""))
 	if err != nil {
-		c.status = STARTERROR
 		return errors.Trace(err)
 	}
 	return nil
 }
 
 func (c *Case) stop() error {
-	_, err := xpost(fmt.Sprintf("%s/%d/process/%s/stop", c.pod.Status.PodIP, c.Port, c.Name), []byte())
+	_, err := xpost(fmt.Sprintf("%s/%d/process/%s/stop", c.pod.Status.PodIP, c.Port, c.Name), []byte(""))
 	if err != nil {
 		c.status = STOPERROR
 		return errors.Trace(err)

@@ -30,12 +30,16 @@ type Operator struct {
 }
 
 // New returns a Operator struct.
-func New(c *rest.Config) *Operator {
-	op := Operator{
-		cli:  kubernetes.NewForConfig(c),
+func New(c *rest.Config) (*Operator, error) {
+	cli, err := kubernetes.NewForConfig(c)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	op := &Operator{
+		cli:  cli,
 		boxs: make(map[string]*Box),
 	}
-	return op
+	return op, nil
 }
 
 // Start is to start operator.
@@ -116,28 +120,51 @@ func (o *Operator) GetBox(name string) (*Box, error) {
 	if box, ok := o.boxs[name]; ok {
 		return box, nil
 	} else {
-
-		return nil, fmt.Errorf("[box: %s] is not exist.", b.Name)
+		return nil, fmt.Errorf("[box: %s] is not exist.", name)
 	}
 }
 
 // AddCase is to add test Case in test Box.
 func (o *Operator) AddCase(b *Box, c *Case) error {
+	if o.valid(b, c) {
+		return fmt.Errorf("[box: %s][case: %s] is exist.", b.Name, c.Name)
+	}
+	if err := b.addCase(c); err != nil {
+		return errors.Trace(err)
+	}
 	return nil
 }
 
 // DeleteCase is to delete test Case.
 func (o *Operator) DeleteCase(b *Box, c *Case) error {
+	if !o.valid(b, c) {
+		return fmt.Errorf("[box: %s][case: %s] is not exist.", b.Name, c.Name)
+	}
+	if err := b.deleteCase(c); err != nil {
+		return errors.Trace(err)
+	}
 	return nil
 }
 
 // StartCase is to start test Case.
 func (o *Operator) StartCase(b *Box, c *Case) error {
+	if !o.valid(b, c) {
+		return fmt.Errorf("[box: %s][case: %s] is not exist.", b.Name, c.Name)
+	}
+	if err := b.startCase(c); err != nil {
+		return errors.Trace(err)
+	}
 	return nil
 }
 
 // StopCase is to stop test Case.
 func (o *Operator) StopCase(b *Box, c *Case) error {
+	if !o.valid(b, c) {
+		return fmt.Errorf("[box: %s][case: %s] is not exist.", b.Name, c.Name)
+	}
+	if err := b.stopCase(c); err != nil {
+		return errors.Trace(err)
+	}
 	return nil
 }
 
@@ -156,7 +183,7 @@ func (o *Operator) createNamespace(namespace string) error {
 }
 
 func (o *Operator) deleteNamespace(namespace string) error {
-	_, err := o.cli.CoreV1().Namespaces().Delete(namespace)
+	err := o.cli.CoreV1().Namespaces().Delete(namespace, &metav1.DeleteOptions{})
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -167,9 +194,9 @@ func (o *Operator) createPod(b *Box, c *Case) error {
 	if !o.valid(b, c) {
 		return fmt.Errorf("[box: %s] [case: %s] is invalid.", b.Name, c.Name)
 	}
-	cmds := []strings{}
+	cmds := []string{}
 	pod, err := o.cli.Pods(b.Name).Create(&v1.Pod{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name:   c.Name,
 			Labels: c.Labels,
 		},
@@ -181,7 +208,7 @@ func (o *Operator) createPod(b *Box, c *Case) error {
 					Command: cmds,
 					Ports: []v1.ContainerPort{
 						{
-							ContainerPort: c.Port,
+							ContainerPort: int32(c.Port),
 						},
 					},
 				},
@@ -202,7 +229,7 @@ func (o *Operator) deletePod(b *Box, c *Case) error {
 	if c.pod == nil {
 		return fmt.Errorf("[box: %s] [case: %s] pod has been deleted", b.Name, c.Name)
 	}
-	if err := o.cli.Pods(b.Name).Delete(c.Name, &v1.DeleteOptions{}); err != nil {
+	if err := o.cli.Pods(b.Name).Delete(c.Name, &metav1.DeleteOptions{}); err != nil {
 		return fmt.Errorf("[box: %s] [case: %s] delete faild: %v", b.Name, c.Name, err)
 	}
 	c.pod = nil
@@ -214,7 +241,7 @@ func (o *Operator) valid(b *Box, c *Case) bool {
 		return false
 	}
 
-	if _, ok := b.cases[c.Name]; !ok {
+	if !b.valid(c) {
 		return false
 	}
 	return true

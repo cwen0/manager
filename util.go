@@ -18,16 +18,16 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"net/http"
+	"time"
 
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
 )
 
 type Response struct {
-	Action     string  `json:"action"`
-	StatusCode int     `json:"status_code"`
-	Message    string  `json:"message,omitempty"`
-	Payload    Payload `json:"payload,omitempty"`
+	Action     string `json:"action"`
+	StatusCode int    `json:"status_code"`
+	Message    string `json:"message,omitempty"`
 }
 
 func xpost(url string, body []byte) (*Response, error) {
@@ -75,4 +75,18 @@ func request(req *http.Request) (*Response, error) {
 	}
 
 	return response, nil
+}
+
+func runWithRetry(retryCnt int, interval time.Duration, f func() error) error {
+	var err error
+	for i := 0; i < retryCnt; i++ {
+		err = f()
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-time.After(interval):
+		}
+	}
+	return errors.Trace(err)
 }
