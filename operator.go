@@ -42,11 +42,6 @@ func New(c *rest.Config) (*Operator, error) {
 	return op, nil
 }
 
-// Start is to start operator.
-// TODO: keep heartbeat with agent.
-// func (o *Operator) Start() error {
-// }
-
 // CreateBox is to create new test Box.
 func (o *Operator) CreateBox(b *Box) error {
 	if _, ok := o.boxs[b.Name]; ok {
@@ -74,6 +69,9 @@ func (o *Operator) StartBox(b *Box) error {
 	if b.status == RUNNING {
 		return fmt.Errorf("[box: %s] is running.", b.Name)
 	}
+	if b.status == STARTING {
+		return fmt.Errorf("[box: %s] is starting.", b.Name)
+	}
 	for _, c := range b.cases {
 		if c.pod != nil {
 			continue
@@ -82,6 +80,7 @@ func (o *Operator) StartBox(b *Box) error {
 			c.status = CREATEPODERROR
 		}
 	}
+	b.status = STARTING
 	err := b.start()
 	if err != nil {
 		return errors.Trace(err)
@@ -95,10 +94,14 @@ func (o *Operator) StopBox(b *Box) error {
 	if _, ok := o.boxs[b.Name]; !ok {
 		return fmt.Errorf("[box: %s] is not exist.", b.Name)
 	}
+	if b.status == STOP {
+		return fmt.Errorf("[box: %s] had been stoped.", b.Name)
+	}
 	err := b.stop()
 	if err != nil {
 		return errors.Trace(err)
 	}
+	b.status = STOP
 	return nil
 }
 
@@ -141,6 +144,9 @@ func (o *Operator) DeleteCase(b *Box, c *Case) error {
 		return fmt.Errorf("[box: %s][case: %s] is not exist.", b.Name, c.Name)
 	}
 	if err := b.deleteCase(c); err != nil {
+		return errors.Trace(err)
+	}
+	if err := o.deletePod(b, c); err != nil {
 		return errors.Trace(err)
 	}
 	return nil

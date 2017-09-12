@@ -15,6 +15,7 @@ package operator
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/ngaut/log"
@@ -46,10 +47,14 @@ type Box struct {
 }
 
 func (b *Box) start() error {
+	wg := sync.WaitGroup
 	for _, c := range b.cases {
+		wg.Add(1)
 		go func(c *Case) {
-			// TODO: retry
-			c.status = STARTING
+			defer wg.Done()
+			if c.status == RUNNING {
+				return
+			}
 			err := runWithRetry(100, 3*time.Second, c.start)
 			if err != nil {
 				log.Errorf("[box: %s][case: %s]start failed: %v", b.Name, c.Name, err)
@@ -60,12 +65,19 @@ func (b *Box) start() error {
 
 		}(c)
 	}
+	wg.Wait()
 	return nil
 }
 
 func (b *Box) stop() error {
+	wg := sync.WaitGroup
 	for _, c := range b.cases {
+		wg.Add(1)
 		go func(c *Case) {
+			defer wg.Done()
+			if c.status == STOP {
+				return
+			}
 			err := runWithRetry(100, 3*time.Second, c.stop)
 			if err != nil {
 				log.Errorf("[box: %s][case: %s]stop failed: %v", b.Name, c.Name, err)
@@ -74,6 +86,7 @@ func (b *Box) stop() error {
 			c.status = STOP
 		}(c)
 	}
+	wg.Wait()
 	return nil
 }
 
