@@ -70,10 +70,19 @@ func (o *Operator) StartBox(b *Box) error {
 	if b.status == RUNNING {
 		return fmt.Errorf("[box: %s] is running.", b.Name)
 	}
+	for _, c := range b.cases {
+		if c.pod != nil {
+			continue
+		}
+		if err := o.createPod(b, c); err != nil {
+			c.status = CREATEPODERROR
+		}
+	}
 	err := b.start()
 	if err != nil {
 		return errors.Trace(err)
 	}
+	b.status = RUNNING
 	return nil
 }
 
@@ -103,8 +112,13 @@ func (o *Operator) DeleteBox(b *Box) error {
 }
 
 // GetBox is to get a test Box by name.
-func (o *Operator) GetBox(name string) *Box {
-	return nil
+func (o *Operator) GetBox(name string) (*Box, error) {
+	if box, ok := o.boxs[name]; ok {
+		return box, nil
+	} else {
+
+		return nil, fmt.Errorf("[box: %s] is not exist.", b.Name)
+	}
 }
 
 // AddCase is to add test Case in test Box.
@@ -147,4 +161,61 @@ func (o *Operator) deleteNamespace(namespace string) error {
 		return errors.Trace(err)
 	}
 	return nil
+}
+
+func (o *Operator) createPod(b *Box, c *Case) error {
+	if !o.valid(b, c) {
+		return fmt.Errorf("[box: %s] [case: %s] is invalid.", b.Name, c.Name)
+	}
+	cmds := []strings{}
+	pod, err := o.cli.Pods(b.Name).Create(&v1.Pod{
+		ObjectMeta: v1.ObjectMeta{
+			Name:   c.Name,
+			Labels: c.Labels,
+		},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Name:    c.Name,
+					Image:   c.Image,
+					Command: cmds,
+					Ports: []v1.ContainerPort{
+						{
+							ContainerPort: c.Port,
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return errors.Trace(err)
+	}
+	c.pod = pod
+	return nil
+}
+
+func (o *Operator) deletePod(b *Box, c *Case) error {
+	if !o.valid(b, c) {
+		return fmt.Errorf("[box: %s] [case: %s] is invalid.", b.Name, c.Name)
+	}
+	if c.pod == nil {
+		return fmt.Errorf("[box: %s] [case: %s] pod has been deleted", b.Name, c.Name)
+	}
+	if err := o.cli.Pods(b.Name).Delete(c.Name, &v1.DeleteOptions{}); err != nil {
+		return fmt.Errorf("[box: %s] [case: %s] delete faild: %v", b.Name, c.Name, err)
+	}
+	c.pod = nil
+	return nil
+}
+
+func (o *Operator) valid(b *Box, c *Case) bool {
+	if _, ok := o.boxs[b.Name]; !ok {
+		return false
+	}
+
+	if _, ok := b.cases[c.Name]; !ok {
+		return false
+	}
+	return true
 }

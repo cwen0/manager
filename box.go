@@ -13,12 +13,17 @@
 
 package operator
 
+import "github.com/ngaut/log"
+
 const (
-	RUNNING  = "running"
-	ERROR    = "error"
-	STOP     = "stop"
-	BUILDING = "building"
-	NEW      = "new"
+	RUNNING        = "running"
+	ERROR          = "error"
+	STOP           = "stop"
+	BUILDING       = "building"
+	NEW            = "new"
+	CREATEPODERROR = "create pod failed"
+	STARTERROR     = "start failed"
+	STOPERROR      = "stop failed"
 )
 
 type Status string
@@ -31,14 +36,17 @@ type Box struct {
 }
 
 func (b *Box) start() error {
+	for _, c := range b.cases {
+		// TODO: retry
+		err := c.start()
+		if err != nil {
+			log.Errorf("[box: %s][case: %s] start failed: %v", b.Name, c.Name, err)
+		}
+	}
 	return nil
 }
 
 func (b *Box) stop() error {
-	return nil
-}
-
-func (b *Box) delete() error {
 	return nil
 }
 

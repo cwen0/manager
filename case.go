@@ -13,26 +13,54 @@
 
 package operator
 
+import (
+	"fmt"
+
+	"github.com/juju/errors"
+	"k8s.io/client-go/pkg/api/v1"
+)
+
 // Case
 type Case struct {
-}
+	// Name
+	Name string `yaml:"name", json:"name"`
 
-func (c *Case) newCase() *Case {
-	return nil
-}
+	// URL is the url for agent to down binary
+	URL string `yaml:"url" json:"url"`
 
-func (c *Case) createPod() {
-	return nil
+	// Image
+	Image string `yaml:"image" json:"image"`
+
+	// Port
+	Port int `yaml:"port" json:"port"`
+
+	// Label
+	Labels map[string]string `yaml:"labels" json:"lables"`
+
+	pod *v1.Pod
+
+	status Status
 }
 
 func (c *Case) start() error {
+	_, err := xpost(fmt.Sprintf("%s/%d/process/%s/start", c.pod.Status.PodIP, c.Port, c.Name), []byte())
+	if err != nil {
+		c.status = STARTERROR
+		return errors.Trace(err)
+	}
 	return nil
 }
 
 func (c *Case) stop() error {
+	_, err := xpost(fmt.Sprintf("%s/%d/process/%s/stop", c.pod.Status.PodIP, c.Port, c.Name), []byte())
+	if err != nil {
+		c.status = STOPERROR
+		return errors.Trace(err)
+	}
 	return nil
 }
 
-func (c *Case) delete() error {
-	return nil
-}
+// TODO: watch status
+//func (c *Case) watch() error {
+//	return nil
+//}
