@@ -21,7 +21,7 @@ import (
 	"k8s.io/client-go/pkg/api/v1"
 )
 
-// Case
+// Case is used to define test case.
 type Case struct {
 	// Name is the name of the test case.
 	Name string `yaml:"name", json:"name"`

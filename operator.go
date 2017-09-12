@@ -151,6 +151,12 @@ func (o *Operator) StartCase(b *Box, c *Case) error {
 	if !o.valid(b, c) {
 		return fmt.Errorf("[box: %s][case: %s] is not exist.", b.Name, c.Name)
 	}
+	if c.pod == nil {
+		if err := o.createPod(b, c); err != nil {
+			c.status = CREATEPODERROR
+			return errors.Trace(err)
+		}
+	}
 	if err := b.startCase(c); err != nil {
 		return errors.Trace(err)
 	}
