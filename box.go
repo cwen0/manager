@@ -14,55 +14,38 @@
 package operator
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
+	"github.com/juju/errors"
 	"github.com/ngaut/log"
 	"golang.org/x/net/context"
 )
 
-const (
-	RUNNING        = "running"
-	ERROR          = "error"
-	STOP           = "stop"
-	BUILDING       = "building"
-	NEW            = "new"
-	CREATEPODERROR = "create pod failed"
-	STARTERROR     = "start failed"
-	STARTING       = "starting"
-	STOPERROR      = "stop failed"
-	TIMEOUT        = "timeout"
-)
-
-type Status string
-
 // Box is a set of test case.
 type Box struct {
 	// Name is the name of the test box.
-	Name   string
-	cases  map[string]*Case
-	status Status
-	ctx    *context.Context
+	Name  string
+	cases map[string]*Case
+	ctx   *context.Context
+	sync.RWMutex
 }
 
 func (b *Box) start() error {
-	wg := sync.WaitGroup
+	var wg sync.WaitGroup
 	for _, c := range b.cases {
 		wg.Add(1)
 		go func(c *Case) {
 			defer wg.Done()
-			if c.status == RUNNING {
+			if c.state == CaseRunning || c.state == CaseStarting || c.state == CaseRestarting {
 				return
 			}
 			err := runWithRetry(100, 3*time.Second, c.start)
 			if err != nil {
 				log.Errorf("[box: %s][case: %s]start failed: %v", b.Name, c.Name, err)
-				c.status = STARTERROR
+				c.changeToState(CaseStartError)
 				return
 			}
-			c.status = RUNNING
-
 		}(c)
 	}
 	wg.Wait()
@@ -70,20 +53,16 @@ func (b *Box) start() error {
 }
 
 func (b *Box) stop() error {
-	wg := sync.WaitGroup
+	var wg sync.WaitGroup
 	for _, c := range b.cases {
 		wg.Add(1)
 		go func(c *Case) {
 			defer wg.Done()
-			if c.status == STOP {
-				return
-			}
 			err := runWithRetry(100, 3*time.Second, c.stop)
 			if err != nil {
 				log.Errorf("[box: %s][case: %s]stop failed: %v", b.Name, c.Name, err)
 				return
 			}
-			c.status = STOP
 		}(c)
 	}
 	wg.Wait()
@@ -95,8 +74,11 @@ func (b *Box) listCase() map[string]*Case {
 }
 
 func (b *Box) getCase(name string) (*Case, error) {
-	if c, ok := b.cases[name]; !ok {
-		return nil, fmt.Errorf("[box: %s][case: %s] is not exist.", b.Name, name)
+	b.RLock()
+	c, ok := b.cases[name]
+	b.Unlock()
+	if !ok {
+		return nil, errors.NotFoundf("[box: %s][case: %s]", b.Name, name)
 	} else {
 		return c, nil
 	}
@@ -104,55 +86,51 @@ func (b *Box) getCase(name string) (*Case, error) {
 
 func (b *Box) startCase(c *Case) error {
 	if !b.valid(c) {
-		return fmt.Errorf("[box: %s][case: %s] is not exist.", b.Name, c.Name)
+		return errors.NotFoundf("[box: %s][case: %s]", b.Name, c.Name)
 	}
-	if c.status == RUNNING {
-		return fmt.Errorf("[box: %s][case: %s] is running.", b.Name, c.Name)
-	}
-	c.status = STARTING
 	err := runWithRetry(100, 3*time.Second, c.start)
 	if err != nil {
-		c.status = STARTERROR
-		return fmt.Errorf("[box: %s][case: %s] start failed: %v", b.Name, c.Name, err)
+		return errors.Errorf("[box: %s][case: %s] start failed: %v", b.Name, c.Name, err)
 	}
-	c.status = RUNNING
 	return nil
 }
 
 func (b *Box) stopCase(c *Case) error {
 	if !b.valid(c) {
-		return fmt.Errorf("[box: %s][case: %s] is not exist.", b.Name, c.Name)
-	}
-	if c.status != RUNNING {
-		return fmt.Errorf("[box: %s][case: %s] is not running.", b.Name, c.Name)
+		return errors.NotFoundf("[box: %s][case: %s]", b.Name, c.Name)
 	}
 	err := runWithRetry(100, 3*time.Second, c.stop)
 	if err != nil {
-		return fmt.Errorf("[box: %s][case: %s] start failed: %v", b.Name, c.Name, err)
+		return errors.Errorf("[box: %s][case: %s] stop failed: %v", b.Name, c.Name, err)
 	}
-	c.status = STOP
 	return nil
 }
 
 func (b *Box) addCase(c *Case) error {
 	if b.valid(c) {
-		return fmt.Errorf("[box: %s][case: %s] is exist.", b.Name, c.Name)
+		return errors.AlreadyExistsf("[box: %s][case: %s]", b.Name, c.Name)
 	}
+	b.Lock()
 	b.cases[c.Name] = c
-	c.status = NEW
+	b.Unlock()
+	c.changeToState(CaseNew)
 	return nil
 }
 
 func (b *Box) deleteCase(c *Case) error {
 	if !b.valid(c) {
-		return fmt.Errorf("[box: %s][case: %s] is not exist.", b.Name, c.Name)
+		return errors.NotFoundf("[box: %s][case: %s]", b.Name, c.Name)
 	}
+	// TODO: close sync goroutine
 	delete(b.cases, c.Name)
 	return nil
 }
 
 func (b *Box) valid(c *Case) bool {
-	if _, ok := b.cases[c.Name]; !ok {
+	b.RLock()
+	_, ok := b.cases[c.Name]
+	b.Unlock()
+	if !ok {
 		return false
 	}
 	return true

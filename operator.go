@@ -15,6 +15,7 @@ package operator
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/juju/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,6 +26,7 @@ import (
 
 // Operator is a operator to manage test Box.
 type Operator struct {
+	sync.RWMutex
 	cli  *kubernetes.Clientset
 	boxs map[string]*Box
 }
@@ -44,15 +46,19 @@ func New(c *rest.Config) (*Operator, error) {
 
 // CreateBox is to create new test Box.
 func (o *Operator) CreateBox(b *Box) error {
-	if _, ok := o.boxs[b.Name]; ok {
-		return fmt.Errorf("[box:%s] is exist.", b.Name)
+	o.RLock()
+	_, ok := o.boxs[b.Name]
+	o.RUnlock()
+	if ok {
+		return errors.AlreadyExistsf("[box: %s]", b.Name)
 	}
 	err := o.createNamespace(b.Name)
 	if err != nil {
 		return errors.Trace(err)
 	}
-	b.status = NEW
+	o.Lock()
 	o.boxs[b.Name] = b
+	o.Unlock()
 	return nil
 }
 
@@ -63,74 +69,78 @@ func (o *Operator) ListBoxs() map[string]*Box {
 
 // StartBox is to run test Box.
 func (o *Operator) StartBox(b *Box) error {
-	if _, ok := o.boxs[b.Name]; !ok {
-		return fmt.Errorf("[box: %s] is not exist.", b.Name)
-	}
-	if b.status == RUNNING {
-		return fmt.Errorf("[box: %s] is running.", b.Name)
-	}
-	if b.status == STARTING {
-		return fmt.Errorf("[box: %s] is starting.", b.Name)
+	o.RLock()
+	_, ok := o.boxs[b.Name]
+	o.RUnlock()
+	if !ok {
+		return errors.NotFoundf("[box: %s]", b.Name)
 	}
 	for _, c := range b.cases {
 		if c.pod != nil {
 			continue
 		}
-		if err := o.createPod(b, c); err != nil {
-			c.status = CREATEPODERROR
-		}
+		go func(c *Case) {
+			if err := o.createPod(b, c); err != nil {
+				c.changeToState(CaseCreatePodError)
+			}
+		}(c)
 	}
-	b.status = STARTING
 	err := b.start()
 	if err != nil {
 		return errors.Trace(err)
 	}
-	b.status = RUNNING
 	return nil
 }
 
 // StopBox is to stop test Box.
 func (o *Operator) StopBox(b *Box) error {
-	if _, ok := o.boxs[b.Name]; !ok {
-		return fmt.Errorf("[box: %s] is not exist.", b.Name)
-	}
-	if b.status == STOP {
-		return fmt.Errorf("[box: %s] had been stoped.", b.Name)
+	o.RLock()
+	_, ok := o.boxs[b.Name]
+	o.RUnlock()
+	if !ok {
+		return errors.NotFoundf("[box: %s]", b.Name)
 	}
 	err := b.stop()
 	if err != nil {
 		return errors.Trace(err)
 	}
-	b.status = STOP
 	return nil
 }
 
 // DeleteBox is to delete test Box.
 func (o *Operator) DeleteBox(b *Box) error {
-	if _, ok := o.boxs[b.Name]; !ok {
-		return fmt.Errorf("[box: %s] is not exist.", b.Name)
+	o.RLock()
+	_, ok := o.boxs[b.Name]
+	o.RUnlock()
+	if !ok {
+		return errors.NotFoundf("[box: %s]", b.Name)
 	}
+	// TODO: close sync state
+	// wait all sync goroutine is closed
+	delete(o.boxs, b.Name)
 	err := o.deleteNamespace(b.Name)
 	if err != nil {
 		return errors.Trace(err)
 	}
-	delete(o.boxs, b.Name)
 	return nil
 }
 
 // GetBox is to get a test Box by name.
 func (o *Operator) GetBox(name string) (*Box, error) {
-	if box, ok := o.boxs[name]; ok {
+	o.RLock()
+	box, ok := o.boxs[name]
+	o.Unlock()
+	if ok {
 		return box, nil
 	} else {
-		return nil, fmt.Errorf("[box: %s] is not exist.", name)
+		return nil, errors.NotFoundf("[box: %s]", name)
 	}
 }
 
 // AddCase is to add test Case in test Box.
 func (o *Operator) AddCase(b *Box, c *Case) error {
 	if o.valid(b, c) {
-		return fmt.Errorf("[box: %s][case: %s] is exist.", b.Name, c.Name)
+		return errors.AlreadyExistsf("[box: %s][case: %s]", b.Name, c.Name)
 	}
 	if err := b.addCase(c); err != nil {
 		return errors.Trace(err)
@@ -141,7 +151,7 @@ func (o *Operator) AddCase(b *Box, c *Case) error {
 // DeleteCase is to delete test Case.
 func (o *Operator) DeleteCase(b *Box, c *Case) error {
 	if !o.valid(b, c) {
-		return fmt.Errorf("[box: %s][case: %s] is not exist.", b.Name, c.Name)
+		return errors.NotFoundf("[box: %s][case: %s]", b.Name, c.Name)
 	}
 	if err := b.deleteCase(c); err != nil {
 		return errors.Trace(err)
@@ -155,15 +165,16 @@ func (o *Operator) DeleteCase(b *Box, c *Case) error {
 // StartCase is to start test Case.
 func (o *Operator) StartCase(b *Box, c *Case) error {
 	if !o.valid(b, c) {
-		return fmt.Errorf("[box: %s][case: %s] is not exist.", b.Name, c.Name)
+		return errors.NotFoundf("[box: %s][case: %s]", b.Name, c.Name)
 	}
 	if c.pod == nil {
 		if err := o.createPod(b, c); err != nil {
-			c.status = CREATEPODERROR
+			c.changeToState(CaseCreatePodError)
 			return errors.Trace(err)
 		}
 	}
 	if err := b.startCase(c); err != nil {
+		c.changeToState(CaseStartError)
 		return errors.Trace(err)
 	}
 	return nil
@@ -172,7 +183,7 @@ func (o *Operator) StartCase(b *Box, c *Case) error {
 // StopCase is to stop test Case.
 func (o *Operator) StopCase(b *Box, c *Case) error {
 	if !o.valid(b, c) {
-		return fmt.Errorf("[box: %s][case: %s] is not exist.", b.Name, c.Name)
+		return errors.NotFoundf("[box: %s][case: %s]", b.Name, c.Name)
 	}
 	if err := b.stopCase(c); err != nil {
 		return errors.Trace(err)
@@ -249,7 +260,10 @@ func (o *Operator) deletePod(b *Box, c *Case) error {
 }
 
 func (o *Operator) valid(b *Box, c *Case) bool {
-	if _, ok := o.boxs[b.Name]; !ok {
+	o.RLock()
+	_, ok := o.boxs[b.Name]
+	defer o.RUnlock()
+	if !ok {
 		return false
 	}
 

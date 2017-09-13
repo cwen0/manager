@@ -15,13 +15,17 @@ package operator
 
 import (
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/juju/errors"
 	"golang.org/x/net/context"
 	"k8s.io/client-go/pkg/api/v1"
 )
 
-// Case is used to define test case.
+var defaultSyncInterval = 10 * time.Second
+
+// Case defines the test case.
 type Case struct {
 	// Name is the name of the test case.
 	Name string `yaml:"name", json:"name"`
@@ -38,9 +42,10 @@ type Case struct {
 	// Labels is for k8s to schedule.
 	Labels map[string]string `yaml:"labels" json:"lables"`
 
-	pod    *v1.Pod
-	status Status
-	ctx    *context.Context
+	state CaseState
+	pod   *v1.Pod
+	ctx   *context.Context
+	sync.RWMutex
 }
 
 func (c *Case) start() error {
@@ -54,13 +59,13 @@ func (c *Case) start() error {
 func (c *Case) stop() error {
 	_, err := xpost(fmt.Sprintf("%s/%d/process/%s/stop", c.pod.Status.PodIP, c.Port, c.Name), []byte(""))
 	if err != nil {
-		c.status = STOPERROR
 		return errors.Trace(err)
 	}
 	return nil
 }
 
-// TODO: watch status
-//func (c *Case) watch() error {
+// TODO: sync status
+//Func (c *Case) watch() error {
+//
 //	return nil
 //}
