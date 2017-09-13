@@ -14,14 +14,16 @@
 package operator
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/GregoryIan/agent/daemon"
+	"github.com/coreos/etcd/clientv3"
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
-	"golang.org/x/net/context"
 	"k8s.io/client-go/pkg/api/v1"
 )
 
@@ -43,6 +45,9 @@ type Case struct {
 
 	// Labels is for k8s to schedule.
 	Labels map[string]string `yaml:"labels" json:"lables"`
+
+	// Status is the status of the test case.
+	Status CaseState `yaml:"status" json:"status"`
 
 	state CaseState
 	pod   *v1.Pod
@@ -68,7 +73,7 @@ func (c *Case) stop() error {
 }
 
 // TODO: sync status
-func (c *Case) monitor(ctx context.Context) error {
+func (c *Case) monitor(ctx context.Context, boxName string, etcdCli *clientv3.Client) error {
 	ticker := time.NewTicker(defaultSyncInterval)
 	for {
 		select {
@@ -103,6 +108,7 @@ func (c *Case) monitor(ctx context.Context) error {
 			case daemon.ProcStatKilled:
 				c.changeToState(CaseKilled)
 			case daemon.ProcStatFatal:
+				// TODO: alert
 				c.changeToState(CaseFatal)
 			case daemon.ProcStatUnknown:
 				c.changeToState(CaseUnknown)
@@ -110,6 +116,22 @@ func (c *Case) monitor(ctx context.Context) error {
 				c.changeToState(CaseUnknown)
 			}
 		}
+		if err := c.saveToStore(boxName, etcdCli); err != nil {
+			log.Errorf("save [box: %s][case: %s] failed: %v", boxName, c.Name, err)
+		}
+	}
+	return nil
+}
+
+func (c *Case) saveToStore(boxName string, etcdCli *clientv3.Client) error {
+	c.Status = c.State()
+	val, err := json.Marshal(c)
+	if err != nil {
+		return errors.Errorf("Marshal case: %v, failed: %v", c, err)
+	}
+	_, err = etcdCli.Put(context.TODO(), fmt.Sprintf("%s/%s/%s", RootPath, boxName, c.Name), string(val))
+	if err != nil {
+		return errors.Errorf("put [%s] to etcd failed: %v", string(val), err)
 	}
 	return nil
 }

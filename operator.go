@@ -14,33 +14,43 @@
 package operator
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
+	"github.com/coreos/etcd/clientv3"
 	"github.com/juju/errors"
-	"golang.org/x/net/context"
+	"github.com/ngaut/log"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/api/v1"
 	"k8s.io/client-go/rest"
 )
 
+const (
+	RootPath = "stability-test"
+)
+
 // Operator is a operator to manage test Box.
 type Operator struct {
 	sync.RWMutex
-	cli  *kubernetes.Clientset
-	boxs map[string]*Box
+	cli     *kubernetes.Clientset
+	boxs    map[string]*Box
+	etcdCli *clientv3.Client
 }
 
 // New returns a Operator struct.
-func New(c *rest.Config) (*Operator, error) {
+func New(c *rest.Config, etcdCli *clientv3.Client) (*Operator, error) {
 	cli, err := kubernetes.NewForConfig(c)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 	op := &Operator{
-		cli:  cli,
-		boxs: make(map[string]*Box),
+		cli:     cli,
+		boxs:    make(map[string]*Box),
+		etcdCli: etcdCli,
 	}
 	return op, nil
 }
@@ -48,9 +58,12 @@ func New(c *rest.Config) (*Operator, error) {
 // Start starts sync state from agent and recover from etcd.
 func (o *Operator) Start(ctx context.Context) error {
 	// TODO: recover from etcd
-	// o.recover()
+	if err := o.recover(ctx); err != nil {
+		log.Errorf("revover failed: %v", err)
+		return errors.Trace(err)
+	}
 	for _, b := range o.boxs {
-		go b.monitor(ctx)
+		go b.monitor(ctx, o.etcdCli)
 	}
 	return nil
 }
@@ -78,7 +91,7 @@ func (o *Operator) CreateBox(ctx context.Context, b *Box) error {
 			}
 		}(c)
 	}
-	go b.monitor(ctx)
+	go b.monitor(ctx, o.etcdCli)
 	return nil
 }
 
@@ -133,6 +146,10 @@ func (o *Operator) DeleteBox(b *Box) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
+	if _, err := o.etcdCli.Delete(context.TODO(), fmt.Sprintf("%s/%s", RootPath, b.Name), clientv3.WithPrefix()); err != nil {
+		log.Errorf("delete [box: %s] from etcd, failed: %v", b.Name, err)
+		return errors.Trace(err)
+	}
 	return nil
 }
 
@@ -160,7 +177,7 @@ func (o *Operator) AddCase(ctx context.Context, b *Box, c *Case) error {
 		c.changeToState(CaseCreatePodError)
 		return errors.Trace(err)
 	}
-	go c.monitor(ctx)
+	go c.monitor(ctx, b.Name, o.etcdCli)
 	return nil
 }
 
@@ -173,6 +190,11 @@ func (o *Operator) DeleteCase(b *Box, c *Case) error {
 		return errors.Trace(err)
 	}
 	if err := o.deletePod(b, c); err != nil {
+		return errors.Trace(err)
+	}
+
+	if err := o.etcdCli.Delete(context.TODO(), fmt.Sprintf("%s/%s/%s", RootPath, b.Name, c.Name)); err != nil {
+		log.Errorf("delete [box: %s][case: %s] from etcd, failed: %v", b.Name, c.Name, err)
 		return errors.Trace(err)
 	}
 	return nil
@@ -281,4 +303,42 @@ func (o *Operator) valid(b *Box, c *Case) bool {
 		return false
 	}
 	return true
+}
+
+func (o *Operator) recover(ctx context.Context) error {
+	resp, err := o.etcdCli.Get(context.TODO(), RootPath, clientv3.WithPrefix())
+	if err != nil {
+		return errors.Trace(err)
+	}
+	for _, cs := range resp.Kvs {
+		keys := strings.Split(cs.Key, "/")
+		if lens(keys) != 3 {
+			return errors.New("get key from etcd is invalid")
+		}
+		if keys[2] != "" && keys[1] != "" {
+			var caseTmp Case
+			if err := json.Unmarshal(cs.Value, &caseTmp); err != nil {
+				log.Errorf("Unmarshal [%s] failed: %v", string(cs.Value), err)
+				return errors.Trace(err)
+			}
+			caseTmp.changeToState(caseTmp.Status)
+			o.RLock()
+			box, ok := o.boxs[keys[1]]
+			o.RUnlock()
+			if !ok {
+				box = &Box{
+					Name: keys[1],
+				}
+
+				if err := o.CreateBox(ctx, box); err != nil {
+					return errors.Trace(err)
+				}
+			}
+			err := box.addCase(caseTmp)
+			if err != nil {
+				return errors.Trace(err)
+			}
+			go caseTmp.monitor(ctx, boxName, o.etcdCli)
+		}
+	}
 }

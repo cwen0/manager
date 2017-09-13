@@ -14,12 +14,13 @@
 package operator
 
 import (
+	"context"
 	"sync"
 	"time"
 
+	"github.com/coreos/etcd/clientv3"
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
-	"golang.org/x/net/context"
 )
 
 // Box is a set of test case.
@@ -139,13 +140,13 @@ func (b *Box) valid(c *Case) bool {
 	return true
 }
 
-func (b *Box) monitor(ctx context.Context) error {
+func (b *Box) monitor(ctx context.Context, etcdCli *clientv3.Client) error {
 	var wg sync.WaitGroup
 	for _, c := range b.cases {
 		wg.Add(1)
 		go func(c *Case) {
 			defer wg.Done()
-			c.monitor(ctx)
+			c.monitor(ctx, b.Name, etcdCli)
 		}(c)
 	}
 	for {
