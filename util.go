@@ -20,14 +20,16 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/GregoryIan/agent/daemon"
 	"github.com/juju/errors"
 	"github.com/ngaut/log"
 )
 
 type Response struct {
-	Action     string `json:"action"`
-	StatusCode int    `json:"status_code"`
-	Message    string `json:"message,omitempty"`
+	Action     string              `json:"action"`
+	StatusCode int                 `json:"status_code"`
+	Message    string              `json:"message,omitempty"`
+	CState     daemon.ProcessState `json:"process_state"`
 }
 
 func xpost(url string, body []byte) (*Response, error) {

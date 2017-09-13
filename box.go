@@ -27,8 +27,9 @@ type Box struct {
 	// Name is the name of the test box.
 	Name  string
 	cases map[string]*Case
-	ctx   *context.Context
 	sync.RWMutex
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func (b *Box) start() error {
@@ -110,6 +111,7 @@ func (b *Box) addCase(c *Case) error {
 	if b.valid(c) {
 		return errors.AlreadyExistsf("[box: %s][case: %s]", b.Name, c.Name)
 	}
+	c.ctx, c.cancel = context.WithCancel(context.Background())
 	b.Lock()
 	b.cases[c.Name] = c
 	b.Unlock()
@@ -122,6 +124,7 @@ func (b *Box) deleteCase(c *Case) error {
 		return errors.NotFoundf("[box: %s][case: %s]", b.Name, c.Name)
 	}
 	// TODO: close sync goroutine
+	c.cancel()
 	delete(b.cases, c.Name)
 	return nil
 }
@@ -134,4 +137,30 @@ func (b *Box) valid(c *Case) bool {
 		return false
 	}
 	return true
+}
+
+func (b *Box) monitor(ctx context.Context) error {
+	var wg sync.WaitGroup
+	for _, c := range b.cases {
+		wg.Add(1)
+		go func(c *Case) {
+			defer wg.Done()
+			c.monitor(ctx)
+		}(c)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			break
+		case <-b.ctx.Done():
+			for _, c := range b.cases {
+				c.cancel()
+			}
+			wg.Wait()
+			break
+		default:
+		}
+	}
+	return nil
 }

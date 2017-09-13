@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"github.com/juju/errors"
+	"golang.org/x/net/context"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/api/v1"
@@ -44,8 +45,18 @@ func New(c *rest.Config) (*Operator, error) {
 	return op, nil
 }
 
+// Start starts sync state from agent and recover from etcd.
+func (o *Operator) Start(ctx context.Context) error {
+	// TODO: recover from etcd
+	// o.recover()
+	for _, b := range o.boxs {
+		go b.monitor(ctx)
+	}
+	return nil
+}
+
 // CreateBox is to create new test Box.
-func (o *Operator) CreateBox(b *Box) error {
+func (o *Operator) CreateBox(ctx context.Context, b *Box) error {
 	o.RLock()
 	_, ok := o.boxs[b.Name]
 	o.RUnlock()
@@ -56,9 +67,18 @@ func (o *Operator) CreateBox(b *Box) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
+	b.ctx, b.cancel = context.WithCancel(context.Background())
 	o.Lock()
 	o.boxs[b.Name] = b
 	o.Unlock()
+	for _, c := range b.cases {
+		go func(c *Case) {
+			if err := o.createPod(b, c); err != nil {
+				c.changeToState(CaseCreatePodError)
+			}
+		}(c)
+	}
+	go b.monitor(ctx)
 	return nil
 }
 
@@ -74,16 +94,6 @@ func (o *Operator) StartBox(b *Box) error {
 	o.RUnlock()
 	if !ok {
 		return errors.NotFoundf("[box: %s]", b.Name)
-	}
-	for _, c := range b.cases {
-		if c.pod != nil {
-			continue
-		}
-		go func(c *Case) {
-			if err := o.createPod(b, c); err != nil {
-				c.changeToState(CaseCreatePodError)
-			}
-		}(c)
 	}
 	err := b.start()
 	if err != nil {
@@ -117,6 +127,7 @@ func (o *Operator) DeleteBox(b *Box) error {
 	}
 	// TODO: close sync state
 	// wait all sync goroutine is closed
+	b.cancel()
 	delete(o.boxs, b.Name)
 	err := o.deleteNamespace(b.Name)
 	if err != nil {
@@ -138,13 +149,18 @@ func (o *Operator) GetBox(name string) (*Box, error) {
 }
 
 // AddCase is to add test Case in test Box.
-func (o *Operator) AddCase(b *Box, c *Case) error {
+func (o *Operator) AddCase(ctx context.Context, b *Box, c *Case) error {
 	if o.valid(b, c) {
 		return errors.AlreadyExistsf("[box: %s][case: %s]", b.Name, c.Name)
 	}
 	if err := b.addCase(c); err != nil {
 		return errors.Trace(err)
 	}
+	if err := o.createPod(b, c); err != nil {
+		c.changeToState(CaseCreatePodError)
+		return errors.Trace(err)
+	}
+	go c.monitor(ctx)
 	return nil
 }
 
@@ -166,12 +182,6 @@ func (o *Operator) DeleteCase(b *Box, c *Case) error {
 func (o *Operator) StartCase(b *Box, c *Case) error {
 	if !o.valid(b, c) {
 		return errors.NotFoundf("[box: %s][case: %s]", b.Name, c.Name)
-	}
-	if c.pod == nil {
-		if err := o.createPod(b, c); err != nil {
-			c.changeToState(CaseCreatePodError)
-			return errors.Trace(err)
-		}
 	}
 	if err := b.startCase(c); err != nil {
 		c.changeToState(CaseStartError)

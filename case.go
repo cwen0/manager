@@ -18,7 +18,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GregoryIan/agent/daemon"
 	"github.com/juju/errors"
+	"github.com/ngaut/log"
 	"golang.org/x/net/context"
 	"k8s.io/client-go/pkg/api/v1"
 )
@@ -44,8 +46,9 @@ type Case struct {
 
 	state CaseState
 	pod   *v1.Pod
-	ctx   *context.Context
 	sync.RWMutex
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func (c *Case) start() error {
@@ -65,7 +68,48 @@ func (c *Case) stop() error {
 }
 
 // TODO: sync status
-//Func (c *Case) watch() error {
-//
-//	return nil
-//}
+func (c *Case) monitor(ctx context.Context) error {
+	ticker := time.NewTicker(defaultSyncInterval)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-c.ctx.Done():
+			return nil
+		case <-ticker.C:
+			url := fmt.Sprintf("%s/%d/process/%s/state", c.pod.Status.PodIP, c.Port, c.Name)
+			resp, err := xpost(url, []byte(""))
+			if err != nil {
+				log.Errorf("request: %s, failed: %v", url, err)
+				c.changeToState(CaseTimeout)
+			}
+			switch resp.CState {
+			case daemon.ProcStatStopped:
+				c.changeToState(CaseStopped)
+			case daemon.ProcStatStarting:
+				c.changeToState(CaseStarting)
+			case daemon.ProcStatRunning:
+				c.changeToState(CaseRunning)
+			case daemon.ProcStatRestarting:
+				c.changeToState(CaseRestarting)
+			case daemon.ProcStatStopping:
+				c.changeToState(CaseStopping)
+			case daemon.ProcStatKilling:
+				c.changeToState(CaseKilling)
+			case daemon.ProcStatTerminating:
+				c.changeToState(CaseTerminating)
+			case daemon.ProcStatExited:
+				c.changeToState(CaseTerminating)
+			case daemon.ProcStatKilled:
+				c.changeToState(CaseKilled)
+			case daemon.ProcStatFatal:
+				c.changeToState(CaseFatal)
+			case daemon.ProcStatUnknown:
+				c.changeToState(CaseUnknown)
+			default:
+				c.changeToState(CaseUnknown)
+			}
+		}
+	}
+	return nil
+}
