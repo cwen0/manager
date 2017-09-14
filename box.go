@@ -23,28 +23,42 @@ import (
 	"github.com/ngaut/log"
 )
 
-// Box is a set of test case.
 type Box struct {
-	// Name is the name of the test box.
-	Name  string
+	name  string
 	cases map[string]*Case
 	sync.RWMutex
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
-func (b *Box) start() error {
+// NewK8sBox return a k8sBox
+func NewBox(name string, cases []*Case, timeout time.Duration) Box {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return &k8sBox{
+		name:   name,
+		cases:  nil, // todo
+		ctx:    ctx, // transfer to case
+		cancel: cancel,
+	}
+}
+
+func (b *k8sBox) Name() string {
+	return b.name
+}
+
+func (b *k8sBox) Start() error {
+	if atomic.LoadInt32(&b)
 	var wg sync.WaitGroup
 	for _, c := range b.cases {
 		wg.Add(1)
 		go func(c *Case) {
 			defer wg.Done()
 			if c.state == CaseRunning || c.state == CaseStarting || c.state == CaseRestarting {
-				return
+				continue
 			}
 			err := runWithRetry(100, 3*time.Second, c.start)
 			if err != nil {
-				log.Errorf("[box: %s][case: %s]start failed: %v", b.Name, c.Name, err)
+				log.Errorf("[box: %s][case: %s]start failed: %v", b.Name(), c.Name(), err)
 				c.changeToState(CaseStartError)
 				return
 			}
@@ -54,7 +68,7 @@ func (b *Box) start() error {
 	return nil
 }
 
-func (b *Box) stop() error {
+func (b *k8sBox) Stop() error {
 	var wg sync.WaitGroup
 	for _, c := range b.cases {
 		wg.Add(1)
@@ -62,7 +76,7 @@ func (b *Box) stop() error {
 			defer wg.Done()
 			err := runWithRetry(100, 3*time.Second, c.stop)
 			if err != nil {
-				log.Errorf("[box: %s][case: %s]stop failed: %v", b.Name, c.Name, err)
+				log.Errorf("[box: %s][case: %s]stop failed: %v", b.Name(), c.Name(), err)
 				return
 			}
 		}(c)
@@ -71,97 +85,49 @@ func (b *Box) stop() error {
 	return nil
 }
 
-func (b *Box) listCase() map[string]*Case {
-	return b.cases
-}
+func (b *k8sBox) State() {}
 
-func (b *Box) getCase(name string) (*Case, error) {
+func (b *k8sBox) Cases() map[string] *Case {
+	cs := make(map[string] *Case)
 	b.RLock()
-	c, ok := b.cases[name]
-	b.Unlock()
+	for n, c := range b.cases {
+		cs[n] = c
+	}
+	b.RUnlock()
+	return cs
+}
+
+func (b *k8sBox) AddCase(c *Case) error {
+	b.RLock()
+	_, ok := b.cases[name]
+	b.RUnlock()
 	if !ok {
-		return nil, errors.NotFoundf("[box: %s][case: %s]", b.Name, name)
-	} else {
-		return c, nil
-	}
-}
-
-func (b *Box) startCase(c *Case) error {
-	if !b.valid(c) {
-		return errors.NotFoundf("[box: %s][case: %s]", b.Name, c.Name)
-	}
-	err := runWithRetry(100, 3*time.Second, c.start)
-	if err != nil {
-		return errors.Errorf("[box: %s][case: %s] start failed: %v", b.Name, c.Name, err)
-	}
-	return nil
-}
-
-func (b *Box) stopCase(c *Case) error {
-	if !b.valid(c) {
-		return errors.NotFoundf("[box: %s][case: %s]", b.Name, c.Name)
-	}
-	err := runWithRetry(100, 3*time.Second, c.stop)
-	if err != nil {
-		return errors.Errorf("[box: %s][case: %s] stop failed: %v", b.Name, c.Name, err)
-	}
-	return nil
-}
-
-func (b *Box) addCase(c *Case) error {
-	if b.valid(c) {
 		return errors.AlreadyExistsf("[box: %s][case: %s]", b.Name, c.Name)
 	}
-	c.ctx, c.cancel = context.WithCancel(context.Background())
+
+	// todo: is fine? c.initial()?
+	c.ctx, c.cancel = context.WithCancel(b.ctx)
 	b.Lock()
 	b.cases[c.Name] = c
 	b.Unlock()
-	c.changeToState(CaseNew)
 	return nil
 }
 
-func (b *Box) deleteCase(c *Case) error {
-	if !b.valid(c) {
-		return errors.NotFoundf("[box: %s][case: %s]", b.Name, c.Name)
-	}
-	// TODO: close sync goroutine
-	c.cancel()
-	delete(b.cases, c.Name)
-	return nil
-}
-
-func (b *Box) valid(c *Case) bool {
+func (b *k8sBox) removeCase(name string) error {
 	b.RLock()
-	_, ok := b.cases[c.Name]
-	b.Unlock()
+	c, ok := b.cases[name]
+	b.RUnlock()
 	if !ok {
-		return false
+		return errors.NotFoundf("case %s", name)
 	}
-	return true
-}
 
-func (b *Box) monitor(ctx context.Context, etcdCli *clientv3.Client) error {
-	var wg sync.WaitGroup
-	for _, c := range b.cases {
-		wg.Add(1)
-		go func(c *Case) {
-			defer wg.Done()
-			c.monitor(ctx, b.Name, etcdCli)
-		}(c)
+	// TODO: close sync goroutine
+	err := c.Stop()
+	if err != nil {
+		return errors.Trace(err)
 	}
-	for {
-		select {
-		case <-ctx.Done():
-			wg.Wait()
-			break
-		case <-b.ctx.Done():
-			for _, c := range b.cases {
-				c.cancel()
-			}
-			wg.Wait()
-			break
-		default:
-		}
-	}
+	b.Lock()
+	delete(b.cases, c.Name)
+	b.Unlock()
 	return nil
 }
