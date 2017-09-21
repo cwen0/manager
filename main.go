@@ -35,17 +35,17 @@ func main() {
 	})
 
 	if err != nil {
-		panic(err.Error())
+		log.Fatal(err)
 	}
 	// use the current context in kubeconfig
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
-		panic(err.Error())
+		log.Fatal(err)
 	}
 	// creates the clientset
 	k8sCli, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		panic(err.Error())
+		log.Fatal(err)
 	}
 	clusterCli := cluster.NewK8sClient("localhost:32333")
 	boxer, err := box.New("operator-test", clusterCli, nil, 10*time.Minute, etcdCli, k8sCli)
