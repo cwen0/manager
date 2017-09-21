@@ -30,22 +30,22 @@ func init() {
 
 func main() {
 	etcdCli, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{"localhost:2379"},
+		Endpoints:   []string{"https://localhost:2379"},
 		DialTimeout: 5 * time.Second,
 	})
 
 	if err != nil {
-		log.Fatal(err)
+		panic(err.Error())
 	}
 	// use the current context in kubeconfig
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
-		log.Fatal(err)
+		panic(err.Error())
 	}
 	// creates the clientset
 	k8sCli, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		log.Fatal(err)
+		panic(err.Error())
 	}
 	clusterCli := cluster.NewK8sClient("localhost:32333")
 	boxer, err := box.New("operator-test", clusterCli, nil, 10*time.Minute, etcdCli, k8sCli)
