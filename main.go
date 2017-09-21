@@ -48,7 +48,7 @@ func main() {
 		panic(err.Error())
 	}
 	clusterCli := cluster.NewK8sClient("localhost:32333")
-	boxer, err := box.New("master", clusterCli, nil, 10*time.Minute, etcdCli, k8sCli)
+	boxer, err := box.New("operator-test", clusterCli, nil, 10*time.Minute, etcdCli, k8sCli)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func main() {
 	go func() {
 		sig := <-sc
 		log.Infof("Got signal [%d] to exit.", sig)
-		boxer.Destroy()
+		os.Exit(0)
 	}()
 	boxer.Start()
 	caseCfg := box.CaseConfig{
